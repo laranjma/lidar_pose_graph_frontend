@@ -1,0 +1,67 @@
+# =========================
+# ROS 2 / colcon / ament
+# =========================
+build/
+install/
+log/
+
+# Colcon defaults
+.colcon/
+.colcon_install_layout
+
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# pytest / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# =========================
+# ROS-specific generated
+# =========================
+*.msg.py
+*.srv.py
+*.action.py
+
+# If using rosidl generators
+rosidl_generator_py/
+
+# =========================
+# IDEs / Editors
+# =========================
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# =========================
+# OS files
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# Misc
+# =========================
+*.log
+*.bak
+*.tmp
