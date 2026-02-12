@@ -29,6 +29,7 @@ import math
 from dataclasses import dataclass
 from typing import Optional, Dict, List, Tuple, Protocol
 
+import numpy as np
 import rclpy
 from rclpy.node import Node
 
@@ -133,8 +134,15 @@ class BackendOptimizer:
 
         params = isam_params if isam_params is not None else gtsam.ISAM2Params()
         if isam_params is None:
-            params.setRelinearizeThreshold(0.01)
-            params.setRelinearizeSkip(1)
+            if hasattr(params, 'setRelinearizeThreshold'):
+                params.setRelinearizeThreshold(0.01)
+            else:
+                params.relinearizeThreshold = 0.01
+
+            if hasattr(params, 'setRelinearizeSkip'):
+                params.setRelinearizeSkip(1)
+            else:
+                params.relinearizeSkip = 1
         self._isam = gtsam.ISAM2(params)
 
         self._has_initialized = False
@@ -323,10 +331,10 @@ class PoseGraphNode(Node):
         odom_sigmas = self.get_parameter('odom_sigmas').value
 
         noise_prior = gtsam.noiseModel.Diagonal.Sigmas(
-            gtsam.Vector([float(prior_sigmas[0]), float(prior_sigmas[1]), float(prior_sigmas[2])])
+            np.array([float(prior_sigmas[0]), float(prior_sigmas[1]), float(prior_sigmas[2])], dtype=float)
         )
         noise_odom = gtsam.noiseModel.Diagonal.Sigmas(
-            gtsam.Vector([float(odom_sigmas[0]), float(odom_sigmas[1]), float(odom_sigmas[2])])
+            np.array([float(odom_sigmas[0]), float(odom_sigmas[1]), float(odom_sigmas[2])], dtype=float)
         )
 
         # Plug-in: swap NoLoopClosure() with a real module later

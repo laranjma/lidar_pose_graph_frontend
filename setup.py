@@ -10,8 +10,10 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        ('share/' + package_name + '/launch', ['launch/lidar_pose_graph_demo.launch.py']),
+        ('share/' + package_name + '/rviz', ['rviz/lidar_pose_graph.rviz']),
     ],
-    install_requires=['setuptools'],
+    install_requires=['setuptools', 'numpy'],
     zip_safe=True,
     maintainer='matheus',
     maintainer_email='matheus.laranjeira@proton.me',
@@ -24,7 +26,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'pose_graph_node = lidar_pose_graph_frontend.pose_graph_node:main',
+            'pose_graph_frontend_backend = lidar_pose_graph_frontend.pose_graph_node:main',
         ],
     },
 )
