@@ -11,7 +11,7 @@ Features
 - Publishes both the raw (odometry) and optimized pose paths.
 
 Node
-- Name: `pose_graph_frontend_backend`
+- Name: `pose_graph_node`
 - Main module: `lidar_pose_graph_frontend.pose_graph_node`
 
 Topics
@@ -59,7 +59,7 @@ source install/setup.bash
 - If the package installs an executable entry point, use:
 
 ```bash
-ros2 run lidar_pose_graph_frontend pose_graph_frontend_backend
+ros2 run lidar_pose_graph_frontend pose_graph_node
 ```
 
 - Or run the module directly for quick testing:

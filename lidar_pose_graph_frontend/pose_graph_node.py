@@ -130,19 +130,23 @@ class BackendOptimizer:
 
     def __init__(self, isam_params: Optional[gtsam.ISAM2Params] = None):
         self._graph = gtsam.NonlinearFactorGraph()
-        self._init = gtsam.Values()
+        self._init = gtsam.Values() # TODO: rename it (it is a initial guess for the graph update)
 
+        # Get iSAM params
+        # TODO: expose tem as ROS params
         params = isam_params if isam_params is not None else gtsam.ISAM2Params()
         if isam_params is None:
+            # Relinearize if variables shift more than threshold
             if hasattr(params, 'setRelinearizeThreshold'):
                 params.setRelinearizeThreshold(0.01)
             else:
                 params.relinearizeThreshold = 0.01
-
+            # Relinearize at least every N updates
             if hasattr(params, 'setRelinearizeSkip'):
                 params.setRelinearizeSkip(1)
             else:
                 params.relinearizeSkip = 1
+        # Create iSAM (interactive smoothing and mapping) optimizer
         self._isam = gtsam.ISAM2(params)
 
         self._has_initialized = False
@@ -210,9 +214,17 @@ class Frontend:
         self._last_scan: Optional[LaserScan] = None
 
     def on_scan(self, scan: LaserScan) -> None:
+        """
+        Store a scan for later keyframe association.
+
+        :param scan: input scan
+        """
+        # TODO: hard-coded values as constants
         self._last_scan = scan
+        # create int nanosecond for dict key
         t_ns = int(scan.header.stamp.sec) * 1_000_000_000 + int(scan.header.stamp.nanosec)
         self._pending_scans_by_time[t_ns] = scan
+        # Clean up old scans
         if len(self._pending_scans_by_time) > 5000:
             for k in sorted(self._pending_scans_by_time.keys())[:1000]:
                 self._pending_scans_by_time.pop(k, None)
@@ -224,39 +236,50 @@ class Frontend:
         backend_estimate: Optional[gtsam.Values],
     ) -> Tuple[Optional[Keyframe], List[Tuple[str, dict]]]:
         """
-        Returns:
-        - new Keyframe if created (else None)
-        - list of "actions" for the caller to apply to backend:
-            ("prior", {...}) or ("between", {...}) etc.
+        Decides whether to create a new keyframe based on odometry thresholds,
+        and if so, which factors to add to the back-end.
+
+        :param odom_pose: current odometry pose
+        :type odom_pose: gtsam.Pose2
+        :param stamp: timestamp of the odometry reading
+        :type stamp: Stamp
+        :param backend_estimate: current back-end estimate for all poses (can be None early on)
+        :type backend_estimate: Optional[gtsam.Values]
+        :return: new Keyframe if created (else None), and list of "actions" for the caller to apply to backend
+        :rtype: Tuple[Keyframe | None, List[Tuple[str, dict]]]
         """
+
         actions: List[Tuple[str, dict]] = []
 
+        # Create first keyframe if none exist (with a prior factor)
         if not self.keyframes:
             kf0 = self._make_keyframe(idx=0, odom_pose=odom_pose, stamp=stamp)
             self.keyframes.append(kf0)
             actions.append(("prior", {"idx": 0, "pose": odom_pose, "noise": self.noise_prior}))
             return kf0, actions
 
+        # Calculate relative transform from last KF to current odom pose
         last_kf = self.keyframes[-1]
         rel = last_kf.odom_pose.between(odom_pose)
         trans = math.hypot(rel.x(), rel.y())
         rot = abs(wrap_angle(rel.theta()))
-
+        # Return if distance is below thresholds (no new keyframe needed)
         if trans < self.trans_thresh and rot < self.rot_thresh:
             return None, actions
-
+        # Otherwise, create new KF using latest scan
         new_idx = last_kf.idx + 1
         new_kf = self._make_keyframe(idx=new_idx, odom_pose=odom_pose, stamp=stamp)
         self.keyframes.append(new_kf)
 
-        # Initial guess for j (use backend estimate if available)
+        # Initial guess for the new KF j (use backend estimate if available)
+        # TODO: maybe rename xj_init
         init_j = self._compose_from_backend_or_fallback(
             backend_estimate=backend_estimate,
             prev_idx=last_kf.idx,
             prev_fallback=last_kf.odom_pose,
             rel=rel,
         )
-
+        # Add odometry factor (e.g. edge) between last KF and new KF
         actions.append((
             "between",
             {
@@ -295,6 +318,8 @@ class Frontend:
         prev_fallback: gtsam.Pose2,
         rel: gtsam.Pose2,
     ) -> gtsam.Pose2:
+        # If backend estimate is available,
+        # use it to compose the initial guess for the new keyframe.
         if backend_estimate is not None:
             k_prev = symbol('x', prev_idx)
             if backend_estimate.exists(k_prev):
@@ -302,14 +327,13 @@ class Frontend:
                 return prev_opt.compose(rel)
         return prev_fallback.compose(rel)
 
-
 # -----------------------------
 # ROS2 Node: wires Front-end and Back-end + I/O
 # -----------------------------
 
 class PoseGraphNode(Node):
     def __init__(self):
-        super().__init__('pose_graph_frontend_backend')
+        super().__init__('pose_graph_node')
 
         # Topics
         self.declare_parameter('odom_topic', '/odom')
@@ -330,6 +354,8 @@ class PoseGraphNode(Node):
         prior_sigmas = self.get_parameter('prior_sigmas').value
         odom_sigmas = self.get_parameter('odom_sigmas').value
 
+        # Define noise models
+        # prior: first node (anchor), so very tight; odom: looser to allow for correction
         noise_prior = gtsam.noiseModel.Diagonal.Sigmas(
             np.array([float(prior_sigmas[0]), float(prior_sigmas[1]), float(prior_sigmas[2])], dtype=float)
         )
@@ -388,6 +414,7 @@ class PoseGraphNode(Node):
             backend_estimate=backend_est,
         )
 
+        # No new keyframe -> no new factors -> no backend update needed
         if new_kf is None:
             return
 
@@ -413,6 +440,8 @@ class PoseGraphNode(Node):
         self._publish_paths()
 
     def _publish_paths(self):
+
+        # No keyframes, no path, return
         if not self.frontend.keyframes:
             return
 

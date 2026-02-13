@@ -26,7 +26,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'pose_graph_frontend_backend = lidar_pose_graph_frontend.pose_graph_node:main',
+            'pose_graph_node = lidar_pose_graph_frontend.pose_graph_node:main',
         ],
     },
 )

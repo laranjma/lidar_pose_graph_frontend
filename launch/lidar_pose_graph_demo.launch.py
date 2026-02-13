@@ -41,8 +41,8 @@ def generate_launch_description():
         # Pose graph frontend backend wrapper
         Node(
             package="lidar_pose_graph_frontend",
-            executable="pose_graph_frontend_backend",
-            name="pose_graph_frontend_backend",
+            executable="pose_graph_node",
+            name="pose_graph_node",
             output="screen",
         ),
 
