@@ -129,7 +129,7 @@ class BackendOptimizer:
     """
 
     def __init__(self, isam_params: Optional[gtsam.ISAM2Params] = None):
-        self._graph = gtsam.NonlinearFactorGraph()
+        self._graph = gtsam.NonlinearFactorGraph() # tmp container from new factors
         self._init = gtsam.Values() # TODO: rename it (it is a initial guess for the graph update)
 
         # Get iSAM params
@@ -172,10 +172,10 @@ class BackendOptimizer:
 
     def update(self) -> None:
         if not self._has_initialized:
-            self._isam.update(self._graph, self._init)
             self._has_initialized = True
-        else:
-            self._isam.update(self._graph, self._init)
+        # Update the iSAM optimizer with the new factors and initial guesses.
+        self._isam.update(self._graph, self._init)
+        # End-of-cycle
         self._graph.resize(0)
         self._init.clear()
 
