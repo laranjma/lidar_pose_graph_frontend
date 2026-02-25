@@ -1,8 +1,8 @@
 # lidar_pose_graph_frontend
 
-> Lightweight ROS2 front-end for a 2D pose-graph pipeline (keyframing + factor generation).
+> Lightweight ROS2 C++ node for a 2D pose-graph pipeline (keyframing + factor generation + iSAM2 back-end).
 
-This package implements the front-end of a simple pose-graph SLAM pipeline and a narrow back-end interface. It selects keyframes from odometry, attaches recent scans, and generates factors (prior / odometry / optional loop-closures) which are applied to a GTSAM-based back-end (iSAM2).
+This package provides a C++ ROS2 node (`pose_graph_node`) that subscribes to odometry and scans, creates keyframes, generates GTSAM factors (prior / between / optional loop-closure), and publishes raw and optimized paths.
 
 Features
 - Keyframe selection using configurable translation and rotation thresholds.
@@ -12,7 +12,7 @@ Features
 
 Node
 - Name: `pose_graph_node`
-- Main module: `lidar_pose_graph_frontend.pose_graph_node`
+- Main source: `src/pose_graph_node.cpp`
 
 Topics
 - Subscribed:
@@ -43,29 +43,21 @@ Loop-closure
 - The package includes a simple `LoopClosureModule` plug-in interface. The default `NoLoopClosure` implementation returns no loop closures. You can implement the protocol to propose `LoopClosureConstraint`s which the front-end will forward to the back-end as `Between` factors.
 
 Dependencies
-- ROS2 Python libraries: `rclpy`, `nav_msgs`, `sensor_msgs`, `geometry_msgs`.
-- GTSAM Python bindings (`gtsam`) for factor graph and iSAM2.
+- ROS2 C++ libraries: `rclcpp`, `nav_msgs`, `sensor_msgs`, `geometry_msgs`.
+- GTSAM C++ library (`libgtsam-dev`) for factor graph and iSAM2.
 
 Development / Running
 1. From your ROS2 workspace root:
 
 ```bash
 colcon build --packages-select lidar_pose_graph_frontend
-source install/setup.bash
+source install/setup.zsh
 ```
 
-2. Run the node (two options):
-
-- If the package installs an executable entry point, use:
+2. Run the node:
 
 ```bash
 ros2 run lidar_pose_graph_frontend pose_graph_node
-```
-
-- Or run the module directly for quick testing:
-
-```bash
-python3 -m lidar_pose_graph_frontend.pose_graph_node
 ```
 
 Notes
@@ -77,4 +69,4 @@ License
 - See `LICENSE` in the package (if present) or add your preferred license.
 
 Contact
-- For questions or contribution, inspect `lidar_pose_graph_frontend/pose_graph_node.py` for implementation details and extend the loop-closure plugin to integrate external detectors.
+- For questions or contribution, inspect `src/pose_graph_node.cpp` for implementation details and extend the loop-closure plugin to integrate external detectors.

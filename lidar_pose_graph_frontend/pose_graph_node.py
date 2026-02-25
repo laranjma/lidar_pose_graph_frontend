@@ -27,7 +27,7 @@ This file is designed to be dropped into a ROS2 Python package and run as a node
 
 import math
 from dataclasses import dataclass
-from typing import Optional, Dict, List, Tuple, Protocol
+from typing import Optional, Dict, List, Tuple
 
 import numpy as np
 import rclpy
@@ -66,6 +66,149 @@ def pose2_to_ros_pose_stamped(p: gtsam.Pose2, frame_id: str, sec: int, nsec: int
     ps.pose.orientation.w = math.cos(yaw / 2.0)
     return ps
 
+def compute_pose_ls(scan_i: Optional[LaserScan], scan_j: Optional[LaserScan]) -> Optional[gtsam.Pose2]:
+    """Estimate a relative pose measurement z_ij between two 2D laser scans.
+
+    Implementation: lightweight 2D ICP using only NumPy (no external dependencies).
+
+    - Converts each ``LaserScan`` to a 2D point set (x,y) in the laser frame.
+    - Aligns scan_j ("sensor" / current) to scan_i ("reference" / previous).
+
+    ICP estimates ``T_ref_sens`` (transform that maps points from scan_j frame into
+    scan_i frame). GTSAM ``BetweenFactorPose2`` expects ``z_ij = T_i^-1 T_j``
+    (transform from pose i to pose j), so we return the inverse transform.
+
+    Returns ``None`` if scan matching fails, so the caller can fall back to odometry.
+    """
+
+    # Basic validation
+    if scan_i is None or scan_j is None:
+        return None
+    if not scan_i.ranges or not scan_j.ranges:
+        return None
+    if float(scan_i.angle_increment) == 0.0 or float(scan_j.angle_increment) == 0.0:
+        return None
+
+    # ----------------------
+    # Helpers
+    # ----------------------
+    def _scan_to_xy(scan: LaserScan) -> np.ndarray:
+        """Convert LaserScan to an (N,2) array of points in the scan frame."""
+        r = np.asarray(scan.ranges, dtype=np.float64)
+        n = r.shape[0]
+        angles = float(scan.angle_min) + np.arange(n, dtype=np.float64) * float(scan.angle_increment)
+
+        finite = np.isfinite(r)
+        in_range = (r >= float(scan.range_min)) & (r <= float(scan.range_max))
+        valid = finite & in_range
+        if not np.any(valid):
+            return np.empty((0, 2), dtype=np.float64)
+
+        r = r[valid]
+        a = angles[valid]
+        x = r * np.cos(a)
+        y = r * np.sin(a)
+        return np.column_stack([x, y])
+
+    def _best_fit_transform_2d(A: np.ndarray, B: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Compute R,t that best align B to A in LS sense: A ~= R @ B + t."""
+        centroid_A = A.mean(axis=0)
+        centroid_B = B.mean(axis=0)
+        AA = A - centroid_A
+        BB = B - centroid_B
+        H = BB.T @ AA
+        U, _, Vt = np.linalg.svd(H)
+        R = Vt.T @ U.T
+        # Ensure det(R)=+1
+        if np.linalg.det(R) < 0:
+            Vt[1, :] *= -1
+            R = Vt.T @ U.T
+        t = centroid_A - (R @ centroid_B)
+        return R, t
+
+    def _nearest_neighbor_bruteforce(src: np.ndarray, dst: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """For each point in src, find nearest in dst (O(N*M) brute force)."""
+        diff = src[:, None, :] - dst[None, :, :]
+        d2 = np.einsum('ijk,ijk->ij', diff, diff)
+        idx = np.argmin(d2, axis=1)
+        min_d2 = d2[np.arange(d2.shape[0]), idx]
+        return idx, min_d2
+
+    def _yaw_from_R(R: np.ndarray) -> float:
+        return math.atan2(float(R[1, 0]), float(R[0, 0]))
+
+    # ----------------------
+    # Point sets
+    # ----------------------
+    ref = _scan_to_xy(scan_i)
+    sens = _scan_to_xy(scan_j)
+    if ref.shape[0] < 30 or sens.shape[0] < 30:
+        return None
+
+    # Cap compute cost (brute-force NN is O(N^2))
+    max_points = 700
+    if ref.shape[0] > max_points:
+        ref = ref[::int(math.ceil(ref.shape[0] / max_points))]
+    if sens.shape[0] > max_points:
+        sens = sens[::int(math.ceil(sens.shape[0] / max_points))]
+
+    # ----------------------
+    # ICP parameters (safe defaults; tune per dataset)
+    # ----------------------
+    max_iters = 50
+    max_corr_dist = 2.0  # meters
+    min_corr = 40
+    max_corr_d2 = float(max_corr_dist * max_corr_dist)
+    eps_trans = 1e-4
+    eps_rot = 1e-4
+
+    # Current estimate of T_ref_sens
+    R_total = np.eye(2, dtype=np.float64)
+    t_total = np.zeros(2, dtype=np.float64)
+    prev_err = None
+
+    for _ in range(max_iters):
+        # Transform sens points into ref using current estimate
+        sens_tf = (sens @ R_total.T) + t_total
+
+        nn_idx, nn_d2 = _nearest_neighbor_bruteforce(sens_tf, ref)
+        good = nn_d2 <= max_corr_d2
+        if int(np.count_nonzero(good)) < min_corr:
+            return None
+
+        A = ref[nn_idx[good]]
+        B_current = sens_tf[good]
+
+        # Increment that aligns current transformed sens to ref
+        R_inc, t_inc = _best_fit_transform_2d(A, B_current)
+        R_total = R_inc @ R_total
+        t_total = (R_inc @ t_total) + t_inc
+
+        mean_err = float(np.sqrt(nn_d2[good].mean()))
+        if prev_err is not None and abs(prev_err - mean_err) < 1e-5:
+            break
+        prev_err = mean_err
+
+        # Small motion => converged
+        if (abs(float(t_inc[0])) < eps_trans and abs(float(t_inc[1])) < eps_trans and abs(_yaw_from_R(R_inc)) < eps_rot):
+            break
+
+    # Quality gate
+    if prev_err is None or prev_err > 0.5:
+        return None
+
+    # Convert to z_ij: invert T_ref_sens -> T_sens_ref (i->j)
+    # R_inv = R_total.T
+    # t_inv = -(R_inv @ t_total)
+    dx = float(t_total[0])
+    dy = float(t_total[1])
+    dth = wrap_angle(_yaw_from_R(R_total))
+
+    # Sanity gate to avoid catastrophic factors
+    if math.hypot(dx, dy) > 3.0 or abs(dth) > math.radians(120.0):
+        return None
+
+    return gtsam.Pose2(dx, dy, dth)
 
 # -----------------------------
 # Data structures
@@ -99,14 +242,77 @@ class LoopClosureConstraint:
     z_ij: gtsam.Pose2
     noise: gtsam.noiseModel.Base
 
-class LoopClosureModule(Protocol):
+class LoopClosureModule:
+    """Lightweight loop-closure detector using gated scan matching."""
+    def __init__(
+        self,
+        noise: gtsam.noiseModel.Base,
+        min_idx_separation: int = 20,
+        search_radius_m: float = 1.5,
+        max_candidates: int = 3,
+        max_trans_error_m: float = 1.0,
+        max_rot_error_rad: float = math.radians(35.0),
+    ):
+        self.noise = noise
+        self.min_idx_separation = int(min_idx_separation)
+        self.search_radius_m = float(search_radius_m)
+        self.max_candidates = int(max_candidates)
+        self.max_trans_error_m = float(max_trans_error_m)
+        self.max_rot_error_rad = float(max_rot_error_rad)
+
+    @staticmethod
+    def _pose_for_kf(kf: Keyframe, current_estimate: Optional[gtsam.Values]) -> gtsam.Pose2:
+        if current_estimate is not None:
+            k = symbol('x', kf.idx)
+            if current_estimate.exists(k):
+                return current_estimate.atPose2(k)
+        return kf.odom_pose
+
     def on_new_keyframe(
         self,
         new_kf: Keyframe,
         keyframes: List[Keyframe],
         current_estimate: Optional[gtsam.Values],
     ) -> List[LoopClosureConstraint]:
-        ...
+        if new_kf.scan is None or len(keyframes) <= 1:
+            return []
+
+        j_idx = new_kf.idx
+        j_pose = self._pose_for_kf(new_kf, current_estimate)
+        candidate_by_dist: List[Tuple[float, Keyframe, gtsam.Pose2]] = []
+
+        for kf in keyframes[:-1]:
+            if (j_idx - kf.idx) < self.min_idx_separation:
+                continue
+            if kf.scan is None:
+                continue
+
+            i_pose = self._pose_for_kf(kf, current_estimate)
+            dist = math.hypot(i_pose.x() - j_pose.x(), i_pose.y() - j_pose.y())
+            if dist > self.search_radius_m:
+                continue
+            candidate_by_dist.append((dist, kf, i_pose))
+
+        if not candidate_by_dist:
+            return []
+
+        candidate_by_dist.sort(key=lambda x: x[0])
+        for _, old_kf, old_pose in candidate_by_dist[:self.max_candidates]:
+            z_ij = compute_pose_ls(old_kf.scan, new_kf.scan)
+            if z_ij is None:
+                continue
+
+            # Gate scan-based estimate against odom/optimized relative pose.
+            pred_ij = old_pose.between(j_pose)
+            err = pred_ij.between(z_ij)
+            if math.hypot(err.x(), err.y()) > self.max_trans_error_m:
+                continue
+            if abs(wrap_angle(err.theta())) > self.max_rot_error_rad:
+                continue
+
+            return [LoopClosureConstraint(i=old_kf.idx, j=j_idx, z_ij=z_ij, noise=self.noise)]
+
+        return []
 
 
 class NoLoopClosure:
@@ -279,14 +485,20 @@ class Frontend:
             prev_fallback=last_kf.odom_pose,
             rel=rel,
         )
-        # Add odometry factor (e.g. edge) between last KF and new KF
+
+        # Scan-based relative pose measurement (i -> j); fallback to odometry if unavailable.
+        z_ij = compute_pose_ls(last_kf.scan, new_kf.scan)
+        if z_ij is None:
+            z_ij = rel
+
+        # Add between factor (scan-based when available, otherwise odometry).
         actions.append((
             "between",
             {
                 "i": last_kf.idx,
                 "j": new_idx,
-                "z_ij": rel,                 # odom-based measurement for now
-                "noise": self.noise_odom,
+                "z_ij": z_ij,
+                "noise": self.noise_odom,   # TODO: add observation noise
                 "init_j": init_j,
             }
         ))
@@ -342,17 +554,33 @@ class PoseGraphNode(Node):
         self.scan_topic = self.get_parameter('scan_topic').value
 
         # Keyframe thresholds (Grisetti V-A defaults)
-        self.declare_parameter('trans_thresh_m', 0.5)
-        self.declare_parameter('rot_thresh_rad', 0.5)
+        self.declare_parameter('trans_thresh_m', 0.2)
+        self.declare_parameter('rot_thresh_rad', 0.2)
 
         # Noise (since rf2o covariance appears zero; tune these)
         self.declare_parameter('prior_sigmas', [1e-3, 1e-3, 1e-3])
-        self.declare_parameter('odom_sigmas',  [0.05, 0.05, 0.10])
+        self.declare_parameter('odom_sigmas',  [0.1, 0.1, 0.20])
+        self.declare_parameter('loop_sigmas', [0.2, 0.2, 0.30])
+
+        # Loop-closure plug-in parameters
+        self.declare_parameter('loop_enable', True)
+        self.declare_parameter('loop_min_idx_separation', 5)
+        self.declare_parameter('loop_search_radius_m', 1.5)
+        self.declare_parameter('loop_max_candidates', 3)
+        self.declare_parameter('loop_max_trans_error_m', 3.0)
+        self.declare_parameter('loop_max_rot_error_rad', 1.57)
 
         trans_thresh = float(self.get_parameter('trans_thresh_m').value)
         rot_thresh = float(self.get_parameter('rot_thresh_rad').value)
         prior_sigmas = self.get_parameter('prior_sigmas').value
         odom_sigmas = self.get_parameter('odom_sigmas').value
+        loop_sigmas = self.get_parameter('loop_sigmas').value
+        loop_enable = bool(self.get_parameter('loop_enable').value)
+        loop_min_idx_separation = int(self.get_parameter('loop_min_idx_separation').value)
+        loop_search_radius_m = float(self.get_parameter('loop_search_radius_m').value)
+        loop_max_candidates = int(self.get_parameter('loop_max_candidates').value)
+        loop_max_trans_error_m = float(self.get_parameter('loop_max_trans_error_m').value)
+        loop_max_rot_error_rad = float(self.get_parameter('loop_max_rot_error_rad').value)
 
         # Define noise models
         # prior: first node (anchor), so very tight; odom: looser to allow for correction
@@ -362,9 +590,22 @@ class PoseGraphNode(Node):
         noise_odom = gtsam.noiseModel.Diagonal.Sigmas(
             np.array([float(odom_sigmas[0]), float(odom_sigmas[1]), float(odom_sigmas[2])], dtype=float)
         )
+        noise_loop = gtsam.noiseModel.Diagonal.Sigmas(
+            np.array([float(loop_sigmas[0]), float(loop_sigmas[1]), float(loop_sigmas[2])], dtype=float)
+        )
 
-        # Plug-in: swap NoLoopClosure() with a real module later
-        loop_closure = NoLoopClosure()
+        loop_closure = (
+            LoopClosureModule(
+                noise=noise_loop,
+                min_idx_separation=loop_min_idx_separation,
+                search_radius_m=loop_search_radius_m,
+                max_candidates=loop_max_candidates,
+                max_trans_error_m=loop_max_trans_error_m,
+                max_rot_error_rad=loop_max_rot_error_rad,
+            )
+            if loop_enable
+            else NoLoopClosure()
+        )
 
         # Build front-end and back-end
         self.frontend = Frontend(

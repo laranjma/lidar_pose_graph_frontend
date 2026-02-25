@@ -3,23 +3,23 @@
 <package format="3">
   <name>lidar_pose_graph_frontend</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
+  <description>2D pose-graph front-end/back-end node for ROS 2 using GTSAM iSAM2.</description>
   <maintainer email="matheus.laranjeira@proton.me">matheus</maintainer>
-  <license>TODO: License declaration</license>
+  <license>Apache-2.0</license>
 
-  <depend>rclpy</depend>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
   <depend>nav_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>sensor_msgs</depend>
-  <depend>tf2_msgs</depend>
-  <exec_depend>python3-numpy</exec_depend>
+  <depend>eigen</depend>
+  <depend>libgtsam-dev</depend>
 
-  <test_depend>ament_copyright</test_depend>
-  <test_depend>ament_flake8</test_depend>
-  <test_depend>ament_pep257</test_depend>
-  <test_depend>python3-pytest</test_depend>
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
 
   <export>
-    <build_type>ament_python</build_type>
+    <build_type>ament_cmake</build_type>
   </export>
 </package>
